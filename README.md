@@ -57,4 +57,4 @@ This project is a simple chat application built with a WebSocket server and a Re
 
 ## License
 
-This project is licensed under the ISC License.
+This project is licensed under the MIT License.
