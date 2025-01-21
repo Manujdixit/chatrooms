@@ -1,64 +1,118 @@
 import { WebSocket, WebSocketServer } from "ws";
+const wss = new WebSocketServer({ port: 8080 });
 
 interface User {
   socket: WebSocket;
   room: string;
-  username: string;
+  username?: string;
 }
 
-const users = new Map<string, User>();
-const wss = new WebSocketServer({ port: 8080 });
+interface JoinMessage {
+  type: "join";
+  payload: {
+    roomId: string;
+    username: string;
+  };
+}
+
+interface ChatMessage {
+  type: "chat";
+  payload: {
+    message: string;
+    username: string;
+  };
+}
+
+type Message = JoinMessage | ChatMessage;
+
+const allSockets = new Map<WebSocket, User>();
+
+function broadcastToRoom(
+  room: string,
+  message: any,
+  excludeSocket?: WebSocket
+) {
+  allSockets.forEach((user) => {
+    if (user.room === room && user.socket !== excludeSocket) {
+      user.socket.send(JSON.stringify(message));
+    }
+  });
+}
 
 wss.on("connection", (socket: WebSocket) => {
-  const socketId = Math.random().toString(36).substring(7);
-
   socket.on("message", (message: string) => {
     try {
-      const data = JSON.parse(message.toString());
+      const parsedMessage = JSON.parse(message) as Message;
 
-      if (data.type === "join") {
-        users.set(socketId, {
-          socket: socket,
-          room: data.room,
-          username: data.username,
+      if (parsedMessage.type === "join") {
+        const { roomId, username } = parsedMessage.payload;
+
+        if (!roomId || !username) {
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              message: "Room ID and username are required",
+            })
+          );
+          return;
+        }
+
+        allSockets.set(socket, {
+          socket,
+          room: roomId,
+          username,
         });
 
-        socket.send(
-          JSON.stringify({
-            type: "joined",
-            room: data.room,
-          })
-        );
+        broadcastToRoom(roomId, {
+          type: "system",
+          payload: { message: `${username} joined the room` },
+        });
+
+        console.log(`User ${username} joined room ${roomId}`);
       }
 
-      if (data.type === "chat") {
-        const sender = users.get(socketId);
-        if (!sender) return;
-
-        for (const [_, user] of users) {
-          if (user.room === sender.room) {
-            user.socket.send(
-              JSON.stringify({
-                type: "chat",
-                message: data.message,
-                username: sender.username,
-                room: sender.room,
-                timestamp: Date.now(),
-              })
-            );
-          }
+      if (parsedMessage.type === "chat") {
+        const user = allSockets.get(socket);
+        if (!user || !user.room) {
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              message: "You must join a room first",
+            })
+          );
+          return;
         }
+
+        broadcastToRoom(user.room, {
+          type: "chat",
+          payload: {
+            message: parsedMessage.payload.message,
+            username: user.username,
+          },
+        });
       }
-    } catch (error) {
-      console.error("Failed to parse message:", error);
+    } catch (err) {
+      socket.send(
+        JSON.stringify({
+          type: "error",
+          message: "Invalid message format",
+        })
+      );
     }
   });
 
   socket.on("close", () => {
-    users.delete(socketId);
+    const user = allSockets.get(socket);
+    if (user) {
+      broadcastToRoom(user.room, {
+        type: "system",
+        payload: { message: `${user.username} left the room` },
+      });
+      allSockets.delete(socket);
+    }
   });
 
   socket.on("error", (err) => {
-    console.log(err);
+    console.error("WebSocket error:", err);
   });
 });
